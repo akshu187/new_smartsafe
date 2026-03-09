@@ -13,6 +13,7 @@ import {
   type CrashIndicators,
   type CrashDetectionResult
 } from '../utils/crashDetection';
+import { reportCrashEvent } from '../services/crashService';
 
 export function useGeolocation() {
   const [location, setLocation] = useState<GeolocationCoordinates | null>(null);
@@ -266,6 +267,21 @@ export function useAccelerometer() {
             events.push(crashEvent);
             localStorage.setItem('crash_events', JSON.stringify(events));
             window.dispatchEvent(new CustomEvent('crash-detected', { detail: crashEvent }));
+
+            if (location) {
+              void reportCrashEvent({
+                location,
+                severity: crashEvent.severity,
+                indicatorsTriggered: result.triggeredIndicators,
+                confidence: result.confidence,
+                indicatorCount: result.indicatorCount,
+                gForce: force,
+                speed: currentSpeed,
+                sosTriggered: false,
+              }).catch((reportError) => {
+                console.error('Failed to persist crash event:', reportError);
+              });
+            }
           } catch (error) {
             console.error('Failed to store crash event:', error);
           }

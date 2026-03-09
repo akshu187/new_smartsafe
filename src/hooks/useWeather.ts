@@ -56,6 +56,7 @@ const saveToCache = (lat: number, lon: number, data: WeatherData): void => {
 export function useWeather(lat?: number, lon?: number) {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!lat || !lon) return;
@@ -71,10 +72,12 @@ export function useWeather(lat?: number, lon?: number) {
       const cached = getFromCache(lat, lon);
       if (cached) {
         setWeather(cached);
+        setError(null);
         return;
       }
 
       setIsLoading(true);
+      setError(null);
       try {
         console.log('Weather: Fetching from API');
         // Using Open-Meteo API (free, no API key required)
@@ -128,13 +131,8 @@ export function useWeather(lat?: number, lon?: number) {
         saveToCache(lat, lon, weatherData);
       } catch (e) {
         console.error('Weather fetch failed', e);
-        // Fallback to simulated data if API fails
-        const fallbackData: WeatherData = {
-          temp: 24,
-          condition: 'Clear',
-          icon: 'Sun'
-        };
-        setWeather(fallbackData);
+        setWeather(null);
+        setError('Weather feed unavailable');
       } finally {
         setIsLoading(false);
       }
@@ -145,5 +143,5 @@ export function useWeather(lat?: number, lon?: number) {
     return () => clearInterval(interval);
   }, [lat, lon]);
 
-  return weather;
+  return { weather, isLoading, error };
 }

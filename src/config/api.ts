@@ -33,6 +33,9 @@ export const API_ENDPOINTS = {
     base: `${API_BASE_URL}/crashes`,
     byId: (id: string) => `${API_BASE_URL}/crashes/${id}`,
   },
+  accidentZones: {
+    nearby: `${API_BASE_URL}/accident-zones`,
+  },
   fleet: {
     drivers: `${API_BASE_URL}/fleet/drivers`,
     rankings: `${API_BASE_URL}/fleet/rankings`,

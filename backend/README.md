@@ -91,6 +91,12 @@ npm start
 - `GET /api/fleet/drivers` - Get all drivers with stats
 - `GET /api/fleet/rankings` - Get driver rankings by safety score
 
+### Accident Zones
+- `GET /api/accident-zones?lat=<latitude>&lon=<longitude>&radius=<km>&includeLive=true`
+  - Returns merged `historical_blackspot` + optional `live_incident` zones.
+  - `includeLive=false` forces historical-only response.
+  - Response includes `data.meta` with provider state and fallback reason.
+
 ## 🔌 Socket.io Events
 
 ### Client → Server
@@ -188,6 +194,10 @@ npm start
 - Use strong JWT secrets
 - Enable HTTPS
 - Configure CORS for production domain
+- Enable live incident integration:
+  - `ENABLE_LIVE_INCIDENT_FETCH=true`
+  - `LIVE_INCIDENT_PROVIDER=tomtom`
+  - `TOMTOM_API_KEY=<your_key>`
 
 ## 🔧 Troubleshooting
 

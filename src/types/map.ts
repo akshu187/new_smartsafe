@@ -5,6 +5,12 @@ export interface AccidentZone {
   accidentCount: number;
   description: string;
   radius: number; // in meters
+  city?: string;
+  distanceKm?: number;
+  source?: 'historical_blackspot' | 'live_incident';
+  provider?: string;
+  confidence?: number;
+  reportedAt?: string;
 }
 
 export interface POI {

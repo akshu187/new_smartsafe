@@ -10,7 +10,8 @@ interface CrashOverlayProps {
 }
 
 export function CrashOverlay({ crashDetectionResult, onCancel, onConfirm }: CrashOverlayProps) {
-  const [countdown, setCountdown] = useState(100);
+  const AUTO_DISPATCH_DELAY_SECONDS = 100;
+  const [countdown, setCountdown] = useState(AUTO_DISPATCH_DELAY_SECONDS);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -56,7 +57,7 @@ export function CrashOverlay({ crashDetectionResult, onCancel, onConfirm }: Cras
 
         <h2 className="text-4xl font-bold text-white mb-4">CRASH DETECTED</h2>
         <p className="text-red-200 text-lg mb-6">
-          An emergency signal will be sent to authorities automatically.
+          Auto alert will be sent in {AUTO_DISPATCH_DELAY_SECONDS} seconds unless you cancel.
         </p>
 
         {/* Show crash detection details */}

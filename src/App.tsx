@@ -1,8 +1,9 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Shield, Mail, Lock, ChevronRight, Navigation, Cloud, Wifi, MapPin, Activity, Clock, Menu, X, Home, BarChart2, History, Settings, Square, Play, AlertCircle, Timer, LogOut, Users, FileText, Mic } from 'lucide-react';
 import { useGeolocation, useAccelerometer } from './hooks/useSensors';
 import { useWeather } from './hooks/useWeather';
+import { useAccidentZones } from './hooks/useAccidentZones';
 import { SpeedDisplay } from './components/SpeedDisplay';
 import { TripControlPanel } from './components/TripControlPanel';
 import { SOSButton } from './components/SOSButton';
@@ -18,9 +19,51 @@ import { useAuth } from './contexts/AuthContext';
 import { FleetProvider } from './contexts/FleetContext';
 import { AppState, Trip, User as DashboardUser } from './types';
 import { cn } from './utils/utils';
+import { reportCrashEvent } from './services/crashService';
+import { SOCKET_URL } from './config/api';
+
+type SafetyAdvisoryLevel = 'info' | 'warning' | 'critical';
+
+interface SafetyAdvisory {
+  level: SafetyAdvisoryLevel;
+  title: string;
+  message: string;
+  timestamp: number;
+}
+
+const EARTH_RADIUS_KM = 6371;
+const toRadians = (value: number) => (value * Math.PI) / 180;
+const haversineDistanceKm = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number => {
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(lat1)) *
+      Math.cos(toRadians(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return EARTH_RADIUS_KM * c;
+};
+
+const getZoneCenter = (coordinates: [number, number][]): [number, number] => {
+  if (!coordinates.length) {
+    return [0, 0];
+  }
+  const sums = coordinates.reduce(
+    (acc, [lat, lon]) => [acc[0] + lat, acc[1] + lon] as [number, number],
+    [0, 0]
+  );
+  return [sums[0] / coordinates.length, sums[1] / coordinates.length];
+};
 
 export default function App() {
-  const { user: authUser, login, logout, isAuthenticated, isLoading } = useAuth();
+  const { user: authUser, login, register: registerAccount, logout, isAuthenticated, isLoading } = useAuth();
   const [appState, setAppState] = useState<AppState>('welcome');
   const [isTripActive, setIsTripActive] = useState(false);
   const [tripDuration, setTripDuration] = useState(0);
@@ -33,8 +76,18 @@ export default function App() {
   const [dashboardView, setDashboardView] = useState<'main' | 'fleet' | 'insurance'>('main');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [signupName, setSignupName] = useState('');
+  const [isSignupMode, setIsSignupMode] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [autoSosEnabled, setAutoSosEnabled] = useState(() => {
+    const saved = localStorage.getItem('smartsafe_auto_sos_enabled');
+    return saved === null ? true : saved === 'true';
+  });
+  const [sosStatusMessage, setSosStatusMessage] = useState<string | null>(null);
+  const [safetyAdvisory, setSafetyAdvisory] = useState<SafetyAdvisory | null>(null);
+  const [riskLevel, setRiskLevel] = useState<'LOW' | 'MEDIUM' | 'HIGH'>('LOW');
+  const [riskScore, setRiskScore] = useState(98);
   const [trips, setTrips] = useState<Trip[]>([
     { id: '1', date: 'Today, 08:45 AM', distance: 12.4, duration: 1450, safetyScore: 96 },
     { id: '2', date: 'Yesterday, 06:12 PM', distance: 45.2, duration: 3600, safetyScore: 92 },
@@ -43,7 +96,17 @@ export default function App() {
 
   const { location, gpsSpeed, setSpeed: setGpsSpeed } = useGeolocation();
   const { gForce, isCrashDetected, crashDetectionResult, accelerometerSpeed, setIsCrashDetected } = useAccelerometer();
-  const weather = useWeather(location?.latitude, location?.longitude);
+  const { weather, error: weatherError } = useWeather(location?.latitude, location?.longitude);
+  const { zones: nearbyZones } = useAccidentZones({
+    location: location
+      ? { latitude: location.latitude, longitude: location.longitude }
+      : null,
+    radius: 30,
+    enabled: !!location && isTripActive,
+  });
+  const [isBackendHealthy, setIsBackendHealthy] = useState(false);
+  const [hasCheckedBackendHealth, setHasCheckedBackendHealth] = useState(false);
+  const advisoryCooldownRef = useRef<Record<string, number>>({});
   const currentUser: DashboardUser | null = authUser
     ? {
         id: authUser._id,
@@ -71,6 +134,190 @@ export default function App() {
   // Use fused speed for all calculations
   const speed = fusedSpeed;
 
+  const nearestZone = location
+    ? nearbyZones
+        .map((zone) => {
+          const center = getZoneCenter(zone.coordinates);
+          return {
+            zone,
+            distanceKm: haversineDistanceKm(
+              location.latitude,
+              location.longitude,
+              center[0],
+              center[1]
+            ),
+          };
+        })
+        .sort((a, b) => a.distanceKm - b.distanceKm)[0] || null
+    : null;
+
+  const normalizedWeather = (weather?.condition || '').toLowerCase();
+  const isBadWeather =
+    normalizedWeather.includes('rain') ||
+    normalizedWeather.includes('storm') ||
+    normalizedWeather.includes('fog') ||
+    normalizedWeather.includes('snow');
+  const recommendedSpeedLimit = isBadWeather ? 45 : weather?.windSpeed && weather.windSpeed > 30 ? 50 : 60;
+
+  useEffect(() => {
+    let score = 100;
+
+    if (speed > 80) {
+      score -= 34;
+    } else if (speed > 60) {
+      score -= 16;
+    }
+
+    if (isBadWeather) {
+      score -= 18;
+    }
+
+    if (weather?.windSpeed && weather.windSpeed > 40) {
+      score -= 10;
+    }
+
+    if (nearestZone) {
+      if (nearestZone.zone.severity === 'high' && nearestZone.distanceKm < 1) {
+        score -= 30;
+      } else if (nearestZone.distanceKm < 1) {
+        score -= 20;
+      } else if (nearestZone.distanceKm < 2) {
+        score -= 10;
+      }
+    }
+
+    if (!isBackendHealthy) {
+      score -= 8;
+    }
+
+    const boundedScore = Math.max(0, Math.min(100, Math.round(score)));
+    setRiskScore(boundedScore);
+    if (boundedScore >= 75) {
+      setRiskLevel('LOW');
+    } else if (boundedScore >= 45) {
+      setRiskLevel('MEDIUM');
+    } else {
+      setRiskLevel('HIGH');
+    }
+  }, [speed, isBadWeather, weather?.windSpeed, nearestZone, isBackendHealthy]);
+
+  useEffect(() => {
+    if (!isTripActive || !location) {
+      return;
+    }
+
+    const now = Date.now();
+    const canNotify = (key: string, cooldownMs: number) => {
+      const previous = advisoryCooldownRef.current[key] || 0;
+      if (now - previous < cooldownMs) {
+        return false;
+      }
+      advisoryCooldownRef.current[key] = now;
+      return true;
+    };
+
+    const pushAdvisory = (
+      key: string,
+      level: SafetyAdvisoryLevel,
+      title: string,
+      message: string,
+      cooldownMs: number,
+      speak: boolean
+    ) => {
+      if (!canNotify(key, cooldownMs)) {
+        return;
+      }
+      setSafetyAdvisory({ level, title, message, timestamp: now });
+      if (speak && 'speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(`${title}. ${message}`);
+        utterance.rate = 1;
+        utterance.pitch = 1;
+        utterance.volume = 0.95;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+      }
+    };
+
+    if (speed > recommendedSpeedLimit + 10) {
+      pushAdvisory(
+        'overspeed',
+        speed > recommendedSpeedLimit + 25 ? 'critical' : 'warning',
+        'Reduce Speed',
+        `Your speed is ${Math.round(speed)} km/h. Recommended max is ${recommendedSpeedLimit} km/h for current conditions.`,
+        30000,
+        true
+      );
+      setHarshEvents((prev) => prev + 1);
+      return;
+    }
+
+    if (nearestZone && nearestZone.distanceKm <= 1.2) {
+      const km = nearestZone.distanceKm < 0.1 ? '<0.1' : nearestZone.distanceKm.toFixed(1);
+      pushAdvisory(
+        `zone_${nearestZone.zone.id}`,
+        nearestZone.zone.severity === 'high' ? 'critical' : 'warning',
+        'Accident-Prone Zone Ahead',
+        `${nearestZone.zone.severity.toUpperCase()} risk zone ${km} km ahead. Slow down and increase following distance.`,
+        45000,
+        true
+      );
+      return;
+    }
+
+    if (isBadWeather && speed > 45) {
+      pushAdvisory(
+        'weather_speed',
+        'warning',
+        'Weather Risk Alert',
+        `Road conditions are ${weather?.condition || 'adverse'}. Keep speed below 45 km/h and avoid sudden braking.`,
+        60000,
+        false
+      );
+      return;
+    }
+
+    if (now - (safetyAdvisory?.timestamp || 0) > 25000) {
+      setSafetyAdvisory(null);
+    }
+  }, [isTripActive, location, speed, recommendedSpeedLimit, nearestZone, isBadWeather, weather?.condition, safetyAdvisory?.timestamp]);
+
+  useEffect(() => {
+    localStorage.setItem('smartsafe_auto_sos_enabled', String(autoSosEnabled));
+  }, [autoSosEnabled]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const checkBackendHealth = async () => {
+      try {
+        const response = await fetch(`${SOCKET_URL}/health`);
+        if (cancelled) {
+          return;
+        }
+        setIsBackendHealthy(response.ok);
+      } catch {
+        if (cancelled) {
+          return;
+        }
+        setIsBackendHealthy(false);
+      } finally {
+        if (!cancelled) {
+          setHasCheckedBackendHealth(true);
+        }
+      }
+    };
+
+    void checkBackendHealth();
+    const interval = setInterval(() => {
+      void checkBackendHealth();
+    }, 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
   useEffect(() => {
     let interval: any;
     if (isTripActive) {
@@ -90,8 +337,9 @@ export default function App() {
       return;
     }
 
-    if (isAuthenticated && appState === 'login') {
+    if (isAuthenticated && appState !== 'dashboard') {
       setAppState('dashboard');
+      return;
     }
 
     if (!isAuthenticated && appState === 'dashboard') {
@@ -99,7 +347,17 @@ export default function App() {
     }
   }, [isAuthenticated, isLoading, appState]);
 
+  const canStartRealTimeMonitoring =
+    isBackendHealthy &&
+    !!location &&
+    !!weather &&
+    !weatherError;
+
   const handleStartTrip = () => {
+    if (!canStartRealTimeMonitoring) {
+      setSosStatusMessage('Cannot start: core real-time services are unavailable');
+      return;
+    }
     setIsTripActive(true);
     setTripDuration(0);
     setTripDistance(0);
@@ -120,19 +378,38 @@ export default function App() {
   const handleLoginSubmit = async () => {
     setAuthError(null);
 
-    if (!loginEmail.trim() || !loginPassword.trim()) {
-      setAuthError('Email and password are required.');
+    if (!loginEmail.trim() || !loginPassword.trim() || (isSignupMode && !signupName.trim())) {
+      setAuthError(
+        isSignupMode
+          ? 'Name, email and password are required.'
+          : 'Email and password are required.'
+      );
       return;
     }
 
     try {
       setIsLoggingIn(true);
-      await login({ email: loginEmail.trim(), password: loginPassword });
+      if (isSignupMode) {
+        await registerAccount({
+          name: signupName.trim(),
+          email: loginEmail.trim(),
+          password: loginPassword,
+        });
+      } else {
+        await login({ email: loginEmail.trim(), password: loginPassword });
+      }
       setLoginPassword('');
+      setSignupName('');
       setDashboardView('main');
       setAppState('dashboard');
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : 'Login failed');
+      setAuthError(
+        error instanceof Error
+          ? error.message
+          : isSignupMode
+          ? 'Sign up failed'
+          : 'Login failed'
+      );
     } finally {
       setIsLoggingIn(false);
     }
@@ -143,6 +420,83 @@ export default function App() {
     setDashboardView('main');
     setIsTripActive(false);
     setAppState('welcome');
+  };
+
+  const dispatchSOS = (
+    source: 'manual' | 'auto',
+    details: unknown = null
+  ): boolean => {
+    if (!isBackendHealthy) {
+      setSosStatusMessage('SOS blocked: backend dispatch service offline');
+      return false;
+    }
+
+    if (!location) {
+      setSosStatusMessage('SOS not sent: GPS location unavailable');
+      return false;
+    }
+
+    const sosMessage = {
+      type: 'EMERGENCY_SOS',
+      source,
+      timestamp: Date.now(),
+      location: {
+        latitude: location.latitude,
+        longitude: location.longitude
+      },
+      crashDetails: details,
+      message: 'CRASH DETECTED - IMMEDIATE ASSISTANCE REQUIRED'
+    };
+
+    window.dispatchEvent(new CustomEvent('sos-sent', { detail: sosMessage }));
+    setSosStatusMessage(source === 'manual' ? 'Manual SOS sent' : 'Auto SOS sent');
+
+    void reportCrashEvent({
+      location: {
+        latitude: location.latitude,
+        longitude: location.longitude,
+      },
+      severity: 'high',
+      indicatorsTriggered:
+        source === 'manual'
+          ? ['manual_sos']
+          : Array.isArray((details as any)?.triggeredIndicators)
+          ? (details as any).triggeredIndicators
+          : ['crash_detected'],
+      confidence:
+        source === 'manual'
+          ? 100
+          : typeof (details as any)?.confidence === 'number'
+          ? (details as any).confidence
+          : 80,
+      indicatorCount:
+        source === 'manual'
+          ? 1
+          : typeof (details as any)?.indicatorCount === 'number'
+          ? (details as any).indicatorCount
+          : 1,
+      gForce,
+      speed,
+      weatherConditions: weather
+        ? {
+            temperature: weather.temp,
+            humidity: weather.humidity,
+            windSpeed: weather.windSpeed,
+            condition: weather.condition,
+          }
+        : undefined,
+      sosTriggered: true,
+      sosSentAt: new Date().toISOString(),
+    }).catch((error) => {
+      console.error('Failed to persist SOS event:', error);
+      setSosStatusMessage('SOS sent locally, backend sync failed');
+    });
+
+    return true;
+  };
+
+  const handleManualSOS = () => {
+    dispatchSOS('manual');
   };
 
   const renderWelcome = () => (
@@ -172,7 +526,7 @@ export default function App() {
           className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 mb-8"
         >
           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Live Monitoring Active in 120+ Cities</span>
+          <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Real-Time Monitoring Enabled</span>
         </motion.div>
 
         <motion.h1
@@ -352,10 +706,29 @@ export default function App() {
     >
       <div className="w-full max-w-[320px] bg-slate-900/60 backdrop-blur-xl border border-slate-800/50 rounded-[28px] p-7 md:p-8 shadow-2xl">
         <div className="text-center mb-6">
-          <h2 className="text-xl font-black text-white mb-1 uppercase tracking-tight">Welcome Back</h2>
-          <p className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Secure Access</p>
+          <h2 className="text-xl font-black text-white mb-1 uppercase tracking-tight">
+            {isSignupMode ? 'Create Account' : 'Welcome Back'}
+          </h2>
+          <p className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">
+            {isSignupMode ? 'New User Signup' : 'Secure Access'}
+          </p>
         </div>
         <div className="space-y-4">
+          {isSignupMode && (
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Name</label>
+              <div className="relative">
+                <Users className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                <input
+                  type="text"
+                  placeholder="Your name"
+                  value={signupName}
+                  onChange={(e) => setSignupName(e.target.value)}
+                  className="w-full bg-slate-800/30 border border-slate-700/30 rounded-xl py-3 pl-10 pr-4 text-xs text-white focus:outline-none focus:border-blue-500/50 transition-colors font-medium"
+                />
+              </div>
+            </div>
+          )}
           <div className="space-y-1.5">
             <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Email</label>
             <div className="relative">
@@ -392,7 +765,22 @@ export default function App() {
             disabled={isLoggingIn}
             className="w-full py-3.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-black text-xs rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-[0.98] mt-2 uppercase tracking-widest"
           >
-            {isLoggingIn ? 'Signing In...' : 'Sign In'}
+            {isLoggingIn
+              ? isSignupMode
+                ? 'Creating Account...'
+                : 'Signing In...'
+              : isSignupMode
+              ? 'Create Account'
+              : 'Sign In'}
+          </button>
+          <button
+            onClick={() => {
+              setIsSignupMode((prev) => !prev);
+              setAuthError(null);
+            }}
+            className="w-full text-[10px] font-bold text-slate-400 hover:text-white transition-colors uppercase tracking-widest"
+          >
+            {isSignupMode ? 'Existing user? Sign In' : 'New user? Create account'}
           </button>
         </div>
       </div>
@@ -509,18 +897,55 @@ export default function App() {
             <div className="flex items-center gap-4 w-full md:w-auto">
               <button 
                 onClick={isTripActive ? handleStopTrip : handleStartTrip}
+                disabled={!isTripActive && !canStartRealTimeMonitoring}
                 className={cn(
-                  "px-6 md:px-8 py-2.5 md:py-3 rounded-full font-black text-xs md:text-sm flex items-center gap-2 transition-all shadow-xl whitespace-nowrap",
+                  "px-6 md:px-8 py-2.5 md:py-3 rounded-full font-black text-xs md:text-sm flex items-center gap-2 transition-all shadow-xl whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed",
                   isTripActive ? "bg-slate-800 text-white" : "bg-white text-slate-950"
                 )}
               >
                 {isTripActive ? <Square className="w-3 h-3 md:w-4 md:h-4 fill-current" /> : <Play className="w-3 h-3 md:w-4 md:h-4 fill-current" />}
                 {isTripActive ? "Stop Trip" : "Start Trip"}
               </button>
-              <span className="text-[10px] md:text-xs font-bold text-slate-500">Start tracking your journey</span>
+              <span className="text-[10px] md:text-xs font-bold text-slate-500">
+                {canStartRealTimeMonitoring ? 'Start tracking your journey' : 'Waiting for GPS, weather, and backend'}
+              </span>
             </div>
           </div>
         </div>
+
+        {safetyAdvisory && (
+          <div
+            className={cn(
+              "mb-6 rounded-2xl border px-4 py-3 md:px-5 md:py-4",
+              safetyAdvisory.level === 'critical'
+                ? 'bg-red-500/10 border-red-500/40'
+                : safetyAdvisory.level === 'warning'
+                ? 'bg-amber-500/10 border-amber-500/40'
+                : 'bg-cyan-500/10 border-cyan-500/40'
+            )}
+          >
+            <div className="flex items-start gap-3">
+              <AlertCircle
+                className={cn(
+                  "w-5 h-5 mt-0.5 shrink-0",
+                  safetyAdvisory.level === 'critical'
+                    ? 'text-red-400'
+                    : safetyAdvisory.level === 'warning'
+                    ? 'text-amber-400'
+                    : 'text-cyan-400'
+                )}
+              />
+              <div>
+                <div className="text-xs md:text-sm font-black text-white uppercase tracking-wider">
+                  {safetyAdvisory.title}
+                </div>
+                <div className="text-[11px] md:text-xs text-slate-300 font-medium mt-1">
+                  {safetyAdvisory.message}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Dashboard Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-8">
@@ -532,7 +957,7 @@ export default function App() {
               <AlertCircle className="w-4 h-4 md:w-5 md:h-5 text-white/80" />
             </div>
             <div className="my-6 md:my-8 relative z-10">
-              <div className="text-4xl md:text-6xl font-black text-white mb-2">LOW</div>
+              <div className="text-4xl md:text-6xl font-black text-white mb-2">{riskLevel}</div>
               <p className="text-white/80 text-[10px] md:text-xs font-medium leading-relaxed max-w-[200px]">
                 Calculated from speed, weather, and accident zone data.
               </p>
@@ -540,7 +965,7 @@ export default function App() {
             <div className="flex items-center justify-between relative z-10">
               <div className="px-2 md:px-3 py-1 bg-white/20 backdrop-blur-md rounded-full text-[8px] md:text-[10px] font-black text-white uppercase tracking-widest">Live</div>
               <div className="w-12 h-12 md:w-16 md:h-16 rounded-full border-2 md:border-4 border-white/20 flex items-center justify-center">
-                <div className="text-[10px] md:text-xs font-black text-white">98%</div>
+                <div className="text-[10px] md:text-xs font-black text-white">{riskScore}%</div>
               </div>
             </div>
           </div>
@@ -579,17 +1004,19 @@ export default function App() {
               </div>
               <div>
                 <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-0.5">Condition</div>
-                <div className="text-lg font-black text-white">{weather?.condition || 'Loading...'}</div>
+                <div className="text-lg font-black text-white">
+                  {weatherError ? 'Unavailable' : weather?.condition || 'Loading...'}
+                </div>
               </div>
             </div>
             <div className="grid grid-cols-3 gap-2 mt-auto">
               <div>
                 <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1">Temp</div>
-                <div className="text-sm font-black text-white">{weather?.temp || '--'}°C</div>
+                <div className="text-sm font-black text-white">{weather?.temp ?? '--'}°C</div>
               </div>
               <div>
                 <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1">Humid</div>
-                <div className="text-sm font-black text-blue-400">{weather?.humidity || '--'}%</div>
+                <div className="text-sm font-black text-blue-400">{weather?.humidity ?? '--'}%</div>
               </div>
               <div>
                 <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1">Wind</div>
@@ -627,7 +1054,7 @@ export default function App() {
                 <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center mb-1.5">
                   <Timer className="w-4 h-4 text-emerald-500" />
                 </div>
-                <div className="text-lg font-black text-white">0</div>
+                <div className="text-lg font-black text-white">{harshEvents}</div>
                 <div className="text-[7px] text-slate-500 font-bold uppercase tracking-widest text-center">Speeding</div>
               </div>
             </div>
@@ -653,16 +1080,33 @@ export default function App() {
             <div className="mt-6 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Connected to emergency services (NHAI)</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  {isBackendHealthy ? 'Dispatch backend connected' : 'Dispatch backend offline'}
+                </span>
               </div>
               <div className="flex items-center gap-4 bg-slate-950/50 px-4 py-2 rounded-2xl border border-slate-800/50">
                 <div className="flex items-center gap-3">
-                  <button className="w-10 h-5 bg-emerald-500 rounded-full relative">
-                    <div className="absolute right-1 top-1 w-3 h-3 bg-white rounded-full" />
+                  <button
+                    onClick={() => setAutoSosEnabled((prev) => !prev)}
+                    className={cn(
+                      "w-10 h-5 rounded-full relative transition-colors",
+                      autoSosEnabled ? "bg-emerald-500" : "bg-slate-600"
+                    )}
+                    type="button"
+                    aria-label={`Auto SOS ${autoSosEnabled ? 'enabled' : 'disabled'}`}
+                  >
+                    <div
+                      className={cn(
+                        "absolute top-1 w-3 h-3 bg-white rounded-full transition-all",
+                        autoSosEnabled ? "right-1" : "left-1"
+                      )}
+                    />
                   </button>
                   <div className="flex flex-col">
                     <span className="text-[10px] font-black text-white uppercase tracking-widest">Auto SOS Dispatch</span>
-                    <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest">Sends location to 112 on impact</span>
+                    <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest">
+                      {autoSosEnabled ? 'Enabled on crash' : 'Disabled (manual only)'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -727,12 +1171,26 @@ export default function App() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
             <div className="flex items-center gap-2">
               <Shield className="w-4 h-4 text-emerald-500" />
-              <span className="text-[10px] md:text-xs font-black text-white uppercase tracking-widest">System Health: Optimal</span>
+              <span className="text-[10px] md:text-xs font-black text-white uppercase tracking-widest">
+                System Health: {canStartRealTimeMonitoring ? 'Ready' : 'Limited'}
+              </span>
             </div>
-            <span className="text-[9px] md:text-[10px] text-slate-500 font-medium">All safety modules are running.</span>
+            <span className="text-[9px] md:text-[10px] text-slate-500 font-medium">
+              {canStartRealTimeMonitoring
+                ? 'Core real-time safety modules are online.'
+                : 'Real-time safety is reduced until all core services recover.'}
+            </span>
           </div>
           <div className="flex flex-wrap items-center gap-2 md:gap-4">
-            {['Weather AI online', 'Accident map synced', 'Voice control ready', 'GPS not enabled'].map((status, i) => (
+            {[
+              hasCheckedBackendHealth
+                ? `Backend ${isBackendHealthy ? 'online' : 'offline'}`
+                : 'Backend checking',
+              weatherError ? 'Weather offline' : 'Weather online',
+              location ? 'GPS online' : 'GPS offline',
+              autoSosEnabled ? 'Auto SOS on' : 'Auto SOS off',
+              `Safe speed ${recommendedSpeedLimit} km/h`,
+            ].map((status, i) => (
               <div key={i} className="px-2 md:px-3 py-1 bg-slate-950/50 border border-slate-800/50 rounded-full text-[8px] md:text-[9px] font-bold text-slate-400 uppercase tracking-widest">
                 {status}
               </div>
@@ -743,17 +1201,14 @@ export default function App() {
 
       {/* Floating SOS Button */}
       <div className="fixed bottom-4 right-4 md:bottom-8 md:right-8 z-[100]">
-        <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          onClick={() => setIsCrashDetected(true)}
-          className="w-16 h-16 md:w-20 md:h-20 bg-red-600 rounded-full flex flex-col items-center justify-center shadow-[0_0_40px_rgba(220,38,38,0.4)] group relative overflow-hidden"
-        >
-          <div className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
-          <AlertCircle className="w-6 h-6 md:w-8 md:h-8 text-white mb-1" />
-          <span className="text-[8px] md:text-[10px] font-black text-white uppercase tracking-widest">SOS</span>
-        </motion.button>
+        <SOSButton onSOS={handleManualSOS} />
       </div>
+
+      {sosStatusMessage && (
+        <div className="fixed bottom-24 right-4 md:bottom-32 md:right-8 z-[100] px-3 py-2 rounded-xl bg-slate-900/90 border border-slate-700 text-[10px] md:text-xs font-bold text-slate-200 uppercase tracking-wider">
+          {sosStatusMessage}
+        </div>
+      )}
 
       {/* Crash Overlay */}
       <AnimatePresence>
@@ -762,31 +1217,11 @@ export default function App() {
             crashDetectionResult={crashDetectionResult}
             onCancel={() => setIsCrashDetected(false)}
             onConfirm={() => {
-              // SOS is sent ONLY after 100-second countdown completes
-              console.log('🚨 SOS SENT TO EMERGENCY SERVICES');
-              console.log('📍 Location:', location);
-              console.log('📊 Crash Details:', crashDetectionResult);
-              
-              // Send SOS to emergency contacts
-              if (location) {
-                const sosMessage = {
-                  type: 'EMERGENCY_SOS',
-                  timestamp: Date.now(),
-                  location: {
-                    latitude: location.latitude,
-                    longitude: location.longitude
-                  },
-                  crashDetails: crashDetectionResult,
-                  message: 'CRASH DETECTED - IMMEDIATE ASSISTANCE REQUIRED'
-                };
-                
-                // Store in localStorage for emergency services
-                localStorage.setItem('emergency_sos', JSON.stringify(sosMessage));
-                
-                // Dispatch SOS event
-                window.dispatchEvent(new CustomEvent('sos-sent', { detail: sosMessage }));
+              if (autoSosEnabled) {
+                dispatchSOS('auto', crashDetectionResult);
+              } else {
+                setSosStatusMessage('Crash detected: auto SOS is off');
               }
-              
               setIsCrashDetected(false);
             }}
           />
@@ -816,3 +1251,4 @@ export default function App() {
     </FleetProvider>
   );
 }
+

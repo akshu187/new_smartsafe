@@ -134,6 +134,20 @@ export function AccidentZoneLayer({
           <p style="margin: 0; font-size: 12px; color: #64748b; line-height: 1.5;">
             ${zone.description}
           </p>
+          <div style="margin-top: 8px; font-size: 11px; color: #475569;">
+            <strong>Source:</strong> ${zone.source === 'live_incident' ? 'Live Incident Feed' : 'Historical Blackspot'}
+            ${zone.provider ? ` (${zone.provider})` : ''}
+          </div>
+          ${
+            typeof zone.confidence === 'number'
+              ? `<div style="font-size: 11px; color: #475569;"><strong>Confidence:</strong> ${Math.round(zone.confidence)}%</div>`
+              : ''
+          }
+          ${
+            zone.reportedAt
+              ? `<div style="font-size: 11px; color: #475569;"><strong>Reported:</strong> ${new Date(zone.reportedAt).toLocaleString()}</div>`
+              : ''
+          }
           
           ${isInZone ? `
             <div style="

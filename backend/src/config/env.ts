@@ -66,18 +66,15 @@ const isProduction = nodeEnv === 'production';
 
 const jwtAccessSecret = getRequiredEnv('JWT_ACCESS_SECRET');
 const jwtRefreshSecret = getRequiredEnv('JWT_REFRESH_SECRET');
+if (jwtAccessSecret.length < 32 || jwtRefreshSecret.length < 32) {
+  throw new Error('JWT secrets must be at least 32 characters');
+}
 
-if (isProduction) {
-  if (jwtAccessSecret.length < 32 || jwtRefreshSecret.length < 32) {
-    throw new Error('JWT secrets must be at least 32 characters in production');
-  }
-
-  if (
-    jwtAccessSecret.includes('change-this') ||
-    jwtRefreshSecret.includes('change-this')
-  ) {
-    throw new Error('Default JWT secrets are not allowed in production');
-  }
+if (
+  jwtAccessSecret.includes('change-this') ||
+  jwtRefreshSecret.includes('change-this')
+) {
+  throw new Error('Default JWT secrets are not allowed');
 }
 
 const frontendOriginsFromList = parseOrigins(getEnv('FRONTEND_URLS'));
@@ -116,6 +113,14 @@ export const env = {
   trustProxy: parseBoolean('TRUST_PROXY', isProduction),
   cookieSecure,
   cookieSameSite,
+  enableLiveIncidentFetch: parseBoolean('ENABLE_LIVE_INCIDENT_FETCH', false),
+  liveIncidentProvider: getEnv('LIVE_INCIDENT_PROVIDER') || 'tomtom',
+  tomtomApiKey: getEnv('TOMTOM_API_KEY'),
+  liveIncidentCacheTtlSec: parseNumber('LIVE_INCIDENT_CACHE_TTL_SEC', 120),
+  liveIncidentRequestTimeoutMs: parseNumber('LIVE_INCIDENT_REQUEST_TIMEOUT_MS', 7000),
+  liveIncidentMaxRadiusKm: parseNumber('LIVE_INCIDENT_MAX_RADIUS_KM', 80),
+  // Default disabled so production-like behavior does not silently degrade to demo data.
+  enableInMemoryDbFallback: parseBoolean('ENABLE_IN_MEMORY_DB_FALLBACK', false),
 };
 
 export type EnvConfig = typeof env;

@@ -91,13 +91,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       const response = await loginService(data);
       setUser(response.data.user);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Login error:', error);
-      throw new Error(
-        error.response?.data?.message ||
-          error.response?.data?.error ||
-          'Login failed'
-      );
+      throw error instanceof Error ? error : new Error('Login failed');
     }
   };
 
@@ -108,13 +104,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       const response = await registerService(data);
       setUser(response.data.user);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Register error:', error);
-      throw new Error(
-        error.response?.data?.message ||
-          error.response?.data?.error ||
-          'Registration failed'
-      );
+      throw error instanceof Error ? error : new Error('Registration failed');
     }
   };
 

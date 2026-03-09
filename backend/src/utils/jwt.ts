@@ -49,7 +49,8 @@ export const verifyAccessToken = (token: string): IJwtPayload => {
  */
 export const verifyRefreshToken = (token: string): IJwtPayload => {
   try {
-    return jwt.verify(token, jwtConfig.refresh.secret) as IJwtPayload;
+    const secret: Secret = jwtConfig.refresh.secret as Secret;
+    return jwt.verify(token, secret) as IJwtPayload;
   } catch (error) {
     throw new Error('Invalid or expired refresh token');
   }

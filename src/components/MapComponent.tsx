@@ -27,6 +27,7 @@ export interface MapComponentProps {
 export function MapComponent({ currentLocation, speed = 0, className = '' }: MapComponentProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const markerRef = useRef<L.Marker | null>(null);
+  const hasCenteredOnUserRef = useRef(false);
   const [showPOIs, setShowPOIs] = useState(true);
   const [showAccidentZones, setShowAccidentZones] = useState(true);
   
@@ -38,7 +39,7 @@ export function MapComponent({ currentLocation, speed = 0, className = '' }: Map
   });
 
   // Fetch accident zones based on current location
-  const { zones, isLoading: zonesLoading } = useAccidentZones({
+  const { zones, isLoading: zonesLoading, error: zonesError } = useAccidentZones({
     location: currentLocation ? {
       latitude: currentLocation.latitude,
       longitude: currentLocation.longitude
@@ -216,9 +217,10 @@ export function MapComponent({ currentLocation, speed = 0, className = '' }: Map
         </div>
       `);
 
-    // Center map on current location (only on first load)
-    if (!markerRef.current) {
+    // Center map on current location once when first GPS fix arrives.
+    if (!hasCenteredOnUserRef.current) {
       updateCenter(position);
+      hasCenteredOnUserRef.current = true;
     }
   }, [currentLocation, mapRef, updateCenter]);
 
@@ -407,6 +409,12 @@ export function MapComponent({ currentLocation, speed = 0, className = '' }: Map
             <span className="text-xs font-medium ml-2">zones detected</span>
           </div>
         </motion.div>
+      )}
+
+      {!zonesLoading && zonesError && showAccidentZones && (
+        <div className="absolute bottom-4 left-4 z-[1000] bg-red-900/90 backdrop-blur-sm text-white px-4 py-2 rounded-lg shadow-lg">
+          <span className="text-xs font-medium">{zonesError}</span>
+        </div>
       )}
       
       <div 

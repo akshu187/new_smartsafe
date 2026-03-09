@@ -1,4 +1,5 @@
 import axiosInstance from './axiosInstance';
+import { AxiosError } from 'axios';
 import { API_ENDPOINTS } from '../config/api';
 
 /**
@@ -38,34 +39,67 @@ export interface AuthUser {
   role: 'admin' | 'driver';
 }
 
+const parseAuthError = (error: unknown, fallback: string): Error => {
+  const axiosError = error as AxiosError<{ message?: string; error?: string }>;
+
+  if (axiosError.code === 'ERR_NETWORK') {
+    return new Error(
+      'Backend server unreachable. Start backend on port 5000 and verify database connectivity.'
+    );
+  }
+
+  if (axiosError.response?.status === 503) {
+    return new Error(
+      axiosError.response.data?.message ||
+        'Database unavailable. Please check backend database connectivity.'
+    );
+  }
+
+  if (axiosError.response?.status === 401) {
+    return new Error('Invalid email or password.');
+  }
+
+  return new Error(
+    axiosError.response?.data?.message ||
+      axiosError.response?.data?.error ||
+      fallback
+  );
+};
+
 /**
  * Register new user
  */
 export const register = async (data: RegisterData): Promise<AuthResponse> => {
-  const response = await axiosInstance.post(API_ENDPOINTS.auth.register, data);
-  
-  // Save tokens
-  if (response.data.success) {
-    localStorage.setItem('accessToken', response.data.data.accessToken);
-    localStorage.setItem('user', JSON.stringify(response.data.data.user));
+  try {
+    const response = await axiosInstance.post(API_ENDPOINTS.auth.register, data);
+
+    if (response.data.success) {
+      localStorage.setItem('accessToken', response.data.data.accessToken);
+      localStorage.setItem('user', JSON.stringify(response.data.data.user));
+    }
+
+    return response.data;
+  } catch (error) {
+    throw parseAuthError(error, 'Registration failed');
   }
-  
-  return response.data;
 };
 
 /**
  * Login user
  */
 export const login = async (data: LoginData): Promise<AuthResponse> => {
-  const response = await axiosInstance.post(API_ENDPOINTS.auth.login, data);
-  
-  // Save tokens
-  if (response.data.success) {
-    localStorage.setItem('accessToken', response.data.data.accessToken);
-    localStorage.setItem('user', JSON.stringify(response.data.data.user));
+  try {
+    const response = await axiosInstance.post(API_ENDPOINTS.auth.login, data);
+
+    if (response.data.success) {
+      localStorage.setItem('accessToken', response.data.data.accessToken);
+      localStorage.setItem('user', JSON.stringify(response.data.data.user));
+    }
+
+    return response.data;
+  } catch (error) {
+    throw parseAuthError(error, 'Login failed');
   }
-  
-  return response.data;
 };
 
 /**

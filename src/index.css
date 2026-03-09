@@ -54,3 +54,12 @@
   0% { bottom: 100%; }
   100% { bottom: -100%; }
 }
+
+/* Leaflet + Tailwind compatibility fix */
+.leaflet-container img,
+.leaflet-container .leaflet-marker-icon,
+.leaflet-container .leaflet-marker-shadow,
+.leaflet-container .leaflet-tile {
+  max-width: none !important;
+  max-height: none !important;
+}

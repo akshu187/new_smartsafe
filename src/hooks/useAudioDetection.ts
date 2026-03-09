@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { analyzeAudio, getSensitivityThresholds } from '../utils/audioAnalysis';
 import type { CrashEvent, AudioCrashMetadata } from '../types';
+import { reportCrashEvent } from '../services/crashService';
 
 export type SensitivityLevel = 'low' | 'medium' | 'high';
 
@@ -64,6 +65,7 @@ export function useAudioDetection(): UseAudioDetectionReturn {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const locationRef = useRef<{ latitude: number; longitude: number } | null>(null);
+  const isInitializingRef = useRef(false);
 
   // Get current location for crash events
   useEffect(() => {
@@ -110,42 +112,6 @@ export function useAudioDetection(): UseAudioDetectionReturn {
       console.error('Failed to save audio config:', error);
     }
   }, []);
-
-  // Request microphone permission
-  const requestPermission = useCallback(async () => {
-    if (!isEnabled) {
-      console.log('Audio detection is disabled');
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaStreamRef.current = stream;
-      setIsPermissionGranted(true);
-
-      // Initialize Web Audio API
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const analyser = audioContext.createAnalyser();
-      const source = audioContext.createMediaStreamSource(stream);
-
-      analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.8;
-      source.connect(analyser);
-
-      audioContextRef.current = audioContext;
-      analyserRef.current = analyser;
-      setIsActive(true);
-
-      // Start audio analysis loop
-      startAnalysisLoop(analyser);
-
-      console.log('Audio detection initialized successfully');
-    } catch (error) {
-      console.error('Microphone permission denied or error:', error);
-      setIsPermissionGranted(false);
-      setIsActive(false);
-    }
-  }, [isEnabled]);
 
   // Audio analysis loop
   const startAnalysisLoop = useCallback((analyser: AnalyserNode) => {
@@ -198,6 +164,19 @@ export function useAudioDetection(): UseAudioDetectionReturn {
           
           // Dispatch custom event for emergency response workflow
           window.dispatchEvent(new CustomEvent('crash-detected', { detail: crashEvent }));
+
+          if (locationRef.current) {
+            void reportCrashEvent({
+              location: locationRef.current,
+              severity: crashEvent.severity,
+              indicatorsTriggered: ['audio_detection'],
+              confidence: Math.round(result.confidence * 100),
+              indicatorCount: 1,
+              sosTriggered: false,
+            }).catch((reportError) => {
+              console.error('Failed to persist audio crash event:', reportError);
+            });
+          }
         } catch (error) {
           console.error('Failed to store crash event:', error);
         }
@@ -216,8 +195,51 @@ export function useAudioDetection(): UseAudioDetectionReturn {
     analyze();
   }, [sensitivity]);
 
+  // Request microphone permission
+  const requestPermission = useCallback(async () => {
+    if (!isEnabled) {
+      console.log('Audio detection is disabled');
+      return;
+    }
+    if (isInitializingRef.current || isActive) {
+      return;
+    }
+
+    isInitializingRef.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      setIsPermissionGranted(true);
+
+      // Initialize Web Audio API
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const analyser = audioContext.createAnalyser();
+      const source = audioContext.createMediaStreamSource(stream);
+
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.8;
+      source.connect(analyser);
+
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
+      setIsActive(true);
+
+      // Start audio analysis loop
+      startAnalysisLoop(analyser);
+
+      console.log('Audio detection initialized successfully');
+    } catch (error) {
+      console.error('Microphone permission denied or error:', error);
+      setIsPermissionGranted(false);
+      setIsActive(false);
+    } finally {
+      isInitializingRef.current = false;
+    }
+  }, [isEnabled, isActive, startAnalysisLoop]);
+
   // Stop audio detection
   const stopDetection = useCallback(() => {
+    isInitializingRef.current = false;
     if (animationFrameRef.current) {
       clearTimeout(animationFrameRef.current);
       animationFrameRef.current = null;
@@ -281,6 +303,19 @@ export function useAudioDetection(): UseAudioDetectionReturn {
     
     // Dispatch test event
     window.dispatchEvent(new CustomEvent('crash-detected', { detail: testCrashEvent }));
+
+    if (locationRef.current) {
+      void reportCrashEvent({
+        location: locationRef.current,
+        severity: testCrashEvent.severity,
+        indicatorsTriggered: ['audio_test_detection'],
+        confidence: 75,
+        indicatorCount: 1,
+        sosTriggered: false,
+      }).catch((reportError) => {
+        console.error('Failed to persist test crash event:', reportError);
+      });
+    }
     
     setTimeout(() => setIsCrashDetected(false), 3000);
   }, [sensitivity]);
@@ -294,8 +329,10 @@ export function useAudioDetection(): UseAudioDetectionReturn {
 
   // Auto-request permission when enabled
   useEffect(() => {
-    if (isEnabled && !isActive && !isPermissionGranted) {
-      requestPermission();
+    // Re-enable should always attempt to reinitialize audio pipeline, even if
+    // permission was granted earlier and detection was manually turned off.
+    if (isEnabled && !isActive) {
+      void requestPermission();
     }
   }, [isEnabled, isActive, isPermissionGranted, requestPermission]);
 

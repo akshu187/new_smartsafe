@@ -13,7 +13,7 @@ import mongoose from 'mongoose';
 dotenv.config();
 
 import { env } from './config/env';
-import connectDatabase from './config/database';
+import connectDatabase, { isDatabaseConnected } from './config/database';
 import { initializeSocket } from './services/socketService';
 
 import authRoutes from './routes/authRoutes';
@@ -21,8 +21,10 @@ import userRoutes from './routes/userRoutes';
 import tripRoutes from './routes/tripRoutes';
 import crashRoutes from './routes/crashRoutes';
 import fleetRoutes from './routes/fleetRoutes';
+import accidentZoneRoutes from './routes/accidentZoneRoutes';
 
 import { errorHandler, notFound } from './utils/errorHandler';
+import { requireDatabaseConnection } from './middleware/requireDatabase';
 
 const app: Application = express();
 const server = http.createServer(app);
@@ -42,9 +44,7 @@ const corsOptions: CorsOptions = {
   credentials: true,
 };
 
-connectDatabase().catch((err) => {
-  console.error('Database connection failed on startup:', err.message);
-});
+void connectDatabase();
 
 initializeSocket(server);
 
@@ -67,7 +67,7 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 app.get('/health', (_req, res) => {
-  const dbConnected = mongoose.connection.readyState === 1;
+  const dbConnected = isDatabaseConnected();
   res.status(dbConnected ? 200 : 503).json({
     success: dbConnected,
     message: dbConnected ? 'SmartSafe Backend is running' : 'Database disconnected',
@@ -82,6 +82,8 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/accident-zones', accidentZoneRoutes);
+app.use('/api/', requireDatabaseConnection);
 app.use('/api/users', userRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/crashes', crashRoutes);
