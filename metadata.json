@@ -1,0 +1,5 @@
+{
+  "name": "SmartSafe – AI Powered Road Safety System",
+  "description": "A premium, futuristic AI-powered road safety dashboard with real-time monitoring, crash detection, and emergency SOS features.",
+  "requestFramePermissions": ["geolocation"]
+}
