@@ -194,10 +194,19 @@ npm start
 - Use strong JWT secrets
 - Enable HTTPS
 - Configure CORS for production domain
+- Set `TRUST_PROXY=true` when running behind Railway proxy
+- Set `COOKIE_SECURE=true` and `COOKIE_SAME_SITE=none` for HTTPS frontend
 - Enable live incident integration:
   - `ENABLE_LIVE_INCIDENT_FETCH=true`
   - `LIVE_INCIDENT_PROVIDER=tomtom`
   - `TOMTOM_API_KEY=<your_key>`
+
+### Railway Deployment Notes
+- A Railway config is included at:
+  - repo root: `railway.json` (for deploying from monorepo root)
+  - backend folder: `backend/railway.json` (for deploying backend as root directory)
+- Health check endpoint is `/health` (always 200 if server process is alive).
+- Readiness endpoint is `/ready` (200 only when MongoDB is connected).
 
 ## 🔧 Troubleshooting
 

@@ -68,9 +68,24 @@ app.use('/api/', limiter);
 
 app.get('/health', (_req, res) => {
   const dbConnected = isDatabaseConnected();
+  res.status(200).json({
+    success: true,
+    message: 'SmartSafe Backend is running',
+    timestamp: new Date().toISOString(),
+    environment: env.nodeEnv,
+    database: {
+      connected: dbConnected,
+      readyState: mongoose.connection.readyState,
+      name: mongoose.connection.name || null,
+    },
+  });
+});
+
+app.get('/ready', (_req, res) => {
+  const dbConnected = isDatabaseConnected();
   res.status(dbConnected ? 200 : 503).json({
     success: dbConnected,
-    message: dbConnected ? 'SmartSafe Backend is running' : 'Database disconnected',
+    message: dbConnected ? 'Service is ready' : 'Service is not ready',
     timestamp: new Date().toISOString(),
     environment: env.nodeEnv,
     database: {
