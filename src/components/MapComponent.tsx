@@ -439,7 +439,7 @@ export function MapComponent({ currentLocation, speed = 0, className = '' }: Map
           <SpeedOverlay
             speed={speed}
             unit="km/h"
-            className="absolute bottom-4 right-4 z-[999]"
+            className="absolute bottom-3 right-3 sm:bottom-4 sm:right-4 z-[999]"
           />
         </>
       )}

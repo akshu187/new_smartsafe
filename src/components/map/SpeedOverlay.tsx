@@ -12,7 +12,7 @@ export function SpeedOverlay({
   speed, 
   speedLimit, 
   unit = 'km/h',
-  className = '' 
+  className = 'absolute bottom-3 right-3 z-[999]' 
 }: SpeedOverlayProps) {
   // Convert speed to selected unit
   const displaySpeed = convertSpeed(speed, unit);
@@ -34,24 +34,24 @@ export function SpeedOverlay({
     <motion.div
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`absolute top-4 right-4 ${bgColor} backdrop-blur-xl border rounded-2xl p-4 ${className}`}
+      className={`${bgColor} backdrop-blur-xl border rounded-xl p-2.5 sm:rounded-2xl sm:p-4 ${className}`}
       style={{ zIndex: 1000 }}
     >
-      <div className="flex items-center gap-3">
-        <div className={`w-10 h-10 rounded-full ${isSpeeding ? 'bg-red-500/20' : 'bg-slate-800/50'} flex items-center justify-center`}>
-          <Gauge className={`w-5 h-5 ${speedColor}`} />
+      <div className="flex items-center gap-2 sm:gap-3">
+        <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full ${isSpeeding ? 'bg-red-500/20' : 'bg-slate-800/50'} flex items-center justify-center`}>
+          <Gauge className={`w-4 h-4 sm:w-5 sm:h-5 ${speedColor}`} />
         </div>
         
         <div>
           <div className="flex items-baseline gap-1">
-            <span className={`text-2xl font-bold ${speedColor}`}>
+            <span className={`text-lg sm:text-2xl font-bold leading-none ${speedColor}`}>
               {Math.round(displaySpeed)}
             </span>
-            <span className="text-sm text-slate-400">{unit}</span>
+            <span className="text-xs sm:text-sm text-slate-400">{unit}</span>
           </div>
           
           {displaySpeedLimit !== undefined && (
-            <div className="text-xs text-slate-400">
+            <div className="text-[10px] sm:text-xs text-slate-400">
               Limit: {Math.round(displaySpeedLimit)} {unit}
             </div>
           )}
@@ -60,7 +60,7 @@ export function SpeedOverlay({
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="text-xs text-red-500 font-medium mt-1"
+              className="text-[10px] sm:text-xs text-red-500 font-medium mt-0.5 sm:mt-1"
             >
               Speeding!
             </motion.div>
